@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Windows.Forms;
 using Shadowsocks.Model;
 using Shadowsocks.Util.SystemProxy;
 
@@ -11,7 +12,7 @@ namespace Shadowsocks.Controller
             return value.ToString("yyyyMMddHHmmssfff");
         }
 
-        public static void Update(Configuration config, bool forceDisable)
+        public static void Update(Configuration config, bool forceDisable, PACServer pacSrv, bool noRetry = false)
         {
             bool global = config.global;
             bool enabled = config.enabled;
@@ -21,25 +22,49 @@ namespace Shadowsocks.Controller
                 enabled = false;
             }
 
-            if (enabled)
+            try
             {
-                if (global)
+                if (enabled)
                 {
-                    WinINet.SetIEProxy(true, true, "127.0.0.1:" + config.localPort.ToString(), "");
+                    if (global)
+                    {
+                        Sysproxy.SetIEProxy(true, true, "localhost:" + config.localPort.ToString(), null);
+                    }
+                    else
+                    {
+                        string pacUrl;
+                        if (config.useOnlinePac && !config.pacUrl.IsNullOrEmpty())
+                        {
+                            pacUrl = config.pacUrl;
+                        }
+                        else
+                        {
+                            pacUrl = pacSrv.PacUrl;
+                        }
+                        Sysproxy.SetIEProxy(true, false, null, pacUrl);
+                    }
                 }
                 else
                 {
-                    string pacUrl;
-                    if (config.useOnlinePac && !config.pacUrl.IsNullOrEmpty())
-                        pacUrl = config.pacUrl;
-                    else
-                        pacUrl = $"http://127.0.0.1:{config.localPort}/pac?t={GetTimestamp(DateTime.Now)}";
-                    WinINet.SetIEProxy(true, false, "", pacUrl);
+                    Sysproxy.SetIEProxy(false, false, null, null);
                 }
             }
-            else
+            catch (ProxyException ex)
             {
-                WinINet.SetIEProxy(false, false, "", "");
+                Logging.LogUsefulException(ex);
+                if (ex.Type != ProxyExceptionType.Unspecific && !noRetry)
+                {
+                    var ret = MessageBox.Show(I18N.GetString("Error occured when process proxy setting, do you want reset current setting and retry?"), I18N.GetString("Shadowsocks"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                    if (ret == DialogResult.Yes)
+                    {
+                        Sysproxy.ResetIEProxy();
+                        Update(config, forceDisable, pacSrv, true);
+                    }
+                }
+                else
+                {
+                    MessageBox.Show(I18N.GetString("Unrecoverable proxy setting error occured, see log for detail"), I18N.GetString("Shadowsocks"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
         }
     }

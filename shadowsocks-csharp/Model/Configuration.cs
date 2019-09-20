@@ -1,15 +1,16 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-
-using Shadowsocks.Controller;
 using Newtonsoft.Json;
+using Shadowsocks.Controller;
 
 namespace Shadowsocks.Model
 {
     [Serializable]
     public class Configuration
     {
+        public string version;
+
         public List<Server> configs;
 
         // when strategy is set, index is ignored
@@ -19,18 +20,26 @@ namespace Shadowsocks.Model
         public bool enabled;
         public bool shareOverLan;
         public bool isDefault;
+        public bool isIPv6Enabled = false;
         public int localPort;
+        public bool portableMode = true;
         public string pacUrl;
         public bool useOnlinePac;
+        public bool secureLocalPac = true;
         public bool availabilityStatistics;
         public bool autoCheckUpdate;
+        public bool checkPreRelease;
         public bool isVerboseLogging;
         public LogViewerConfig logViewer;
         public ProxyConfig proxy;
         public HotkeyConfig hotkey;
 
-        private static string CONFIG_FILE = "gui-config.json";
-
+        private static readonly string CONFIG_FILE = "gui-config.json";
+        [JsonIgnore]
+        public string localHost => GetLocalHost();
+        private string GetLocalHost() {
+            return isIPv6Enabled ? "[::1]" : "127.0.0.1";
+        }
         public Server GetCurrentServer()
         {
             if (index >= 0 && index < configs.Count)
@@ -41,10 +50,23 @@ namespace Shadowsocks.Model
 
         public static void CheckServer(Server server)
         {
+            CheckServer(server.server);
             CheckPort(server.server_port);
             CheckPassword(server.password);
-            CheckServer(server.server);
             CheckTimeout(server.timeout, Server.MaxServerTimeoutSec);
+        }
+
+        public static bool ChecksServer(Server server)
+        {
+            try
+            {
+                CheckServer(server);
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         public static Configuration Load()
@@ -54,6 +76,11 @@ namespace Shadowsocks.Model
                 string configContent = File.ReadAllText(CONFIG_FILE);
                 Configuration config = JsonConvert.DeserializeObject<Configuration>(configContent);
                 config.isDefault = false;
+
+                if (config.configs == null)
+                    config.configs = new List<Server>();
+                if (config.configs.Count == 0)
+                    config.configs.Add(GetDefaultServer());
                 if (config.localPort == 0)
                     config.localPort = 1080;
                 if (config.index == -1 && config.strategy == null)
@@ -64,11 +91,13 @@ namespace Shadowsocks.Model
                     config.proxy = new ProxyConfig();
                 if (config.hotkey == null)
                     config.hotkey = new HotkeyConfig();
-
-                if (config.proxy.proxyType < ProxyConfig.PROXY_SOCKS5 || config.proxy.proxyType > ProxyConfig.PROXY_HTTP)
-                {
-                    config.proxy.proxyType = ProxyConfig.PROXY_SOCKS5;
+                if (!System.Net.Sockets.Socket.OSSupportsIPv6) {
+                    config.isIPv6Enabled = false; // disable IPv6 if os not support
                 }
+                //TODO if remote host(server) do not support IPv6 (or DNS resolve AAAA TYPE record) disable IPv6?
+
+                config.proxy.CheckConfig();
+
                 return config;
             }
             catch (Exception e)
@@ -84,13 +113,17 @@ namespace Shadowsocks.Model
                     configs = new List<Server>()
                     {
                         GetDefaultServer()
-                    }
+                    },
+                    logViewer = new LogViewerConfig(),
+                    proxy = new ProxyConfig(),
+                    hotkey = new HotkeyConfig()
                 };
             }
         }
 
         public static void Save(Configuration config)
         {
+            config.version = UpdateChecker.Version;
             if (config.index >= config.configs.Count)
                 config.index = config.configs.Count - 1;
             if (config.index < -1)
@@ -111,6 +144,22 @@ namespace Shadowsocks.Model
             {
                 Logging.LogUsefulException(e);
             }
+        }
+
+        public static Server AddDefaultServerOrServer(Configuration config, Server server = null, int? index = null)
+        {
+            if (config != null && config.configs != null)
+            {
+                server = (server ?? GetDefaultServer());
+
+                config.configs.Insert(index.GetValueOrDefault(config.configs.Count), server);
+
+                //if (index.HasValue)
+                //    config.configs.Insert(index.Value, server);
+                //else
+                //    config.configs.Add(server);
+            }
+            return server;
         }
 
         public static Server GetDefaultServer()
@@ -152,8 +201,20 @@ namespace Shadowsocks.Model
         public static void CheckTimeout(int timeout, int maxTimeout)
         {
             if (timeout <= 0 || timeout > maxTimeout)
-                throw new ArgumentException(string.Format(
-                    I18N.GetString("Timeout is invalid, it should not exceed {0}"), maxTimeout));
+                throw new ArgumentException(
+                    I18N.GetString("Timeout is invalid, it should not exceed {0}", maxTimeout));
+        }
+
+        public static void CheckProxyAuthUser(string user)
+        {
+            if (user.IsNullOrEmpty())
+                throw new ArgumentException(I18N.GetString("Auth user can not be blank"));
+        }
+
+        public static void CheckProxyAuthPwd(string pwd)
+        {
+            if (pwd.IsNullOrEmpty())
+                throw new ArgumentException(I18N.GetString("Auth pwd can not be blank"));
         }
     }
 }

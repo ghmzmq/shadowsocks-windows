@@ -12,22 +12,22 @@ namespace Shadowsocks.Model
     public class HotkeyConfig
     {
         public string SwitchSystemProxy;
-        public string ChangeToPac;
-        public string ChangeToGlobal;
+        public string SwitchSystemProxyMode;
         public string SwitchAllowLan;
         public string ShowLogs;
         public string ServerMoveUp;
         public string ServerMoveDown;
+        public bool RegHotkeysAtStartup;
 
         public HotkeyConfig()
         {
             SwitchSystemProxy = "";
-            ChangeToPac = "";
-            ChangeToGlobal = "";
+            SwitchSystemProxyMode = "";
             SwitchAllowLan = "";
             ShowLogs = "";
             ServerMoveUp = "";
             ServerMoveDown = "";
+            RegHotkeysAtStartup = false;
         }
     }
 }

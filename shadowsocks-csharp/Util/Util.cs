@@ -1,70 +1,90 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Security;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using Shadowsocks.Controller;
+using Shadowsocks.Model;
 
 namespace Shadowsocks.Util
 {
     public struct BandwidthScaleInfo
     {
         public float value;
-        public string unit_name;
+        public string unitName;
         public long unit;
 
-        public BandwidthScaleInfo(float value, string unit_name, long unit)
+        public BandwidthScaleInfo(float value, string unitName, long unit)
         {
             this.value = value;
-            this.unit_name = unit_name;
+            this.unitName = unitName;
             this.unit = unit;
         }
     }
 
-    public class Utils
+    public static class Utils
     {
-        private static bool? _portableMode;
-        private static string TempPath = null;
-
-        public static bool IsPortableMode()
-        {
-            if (!_portableMode.HasValue)
-            {
-                _portableMode = File.Exists(Path.Combine(Application.StartupPath, "shadowsocks_portable_mode.txt"));
-            }
-
-            return _portableMode.Value;
-        }
+        private static string _tempPath = null;
 
         // return path to store temporary files
         public static string GetTempPath()
         {
-            if (TempPath == null)
+            if (_tempPath == null)
             {
-                if (IsPortableMode())
-                    try
+                bool isPortableMode = Configuration.Load().portableMode;
+                try
+                {
+                    if (isPortableMode)
                     {
-                        Directory.CreateDirectory(Path.Combine(Application.StartupPath, "temp"));
+                        _tempPath = Directory.CreateDirectory("ss_win_temp").FullName;
+                        // don't use "/", it will fail when we call explorer /select xxx/ss_win_temp\xxx.log
                     }
-                    catch (Exception e)
+                    else
                     {
-                        TempPath = Path.GetTempPath();
-                        Logging.LogUsefulException(e);
+                        _tempPath = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), @"Shadowsocks\ss_win_temp_" + Application.ExecutablePath.GetHashCode())).FullName;
                     }
-                    finally
-                    {
-                        // don't use "/", it will fail when we call explorer /select xxx/temp\xxx.log
-                        TempPath = Path.Combine(Application.StartupPath, "temp");
-                    }
-                else
-                    TempPath = Path.GetTempPath();
+                }
+                catch (Exception e)
+                {
+                    Logging.Error(e);
+                    throw;
+                }
             }
-            return TempPath;
+            return _tempPath;
+        }
+
+        public enum WindowsThemeMode { Dark, Light }
+
+        // Support on Windows 10 1903+
+        public static WindowsThemeMode GetWindows10SystemThemeSetting(bool isVerbose)
+        {
+            WindowsThemeMode themeMode = WindowsThemeMode.Dark;
+            try
+            {
+                RegistryKey reg_ThemesPersonalize = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", false);
+                if (reg_ThemesPersonalize.GetValue("SystemUsesLightTheme") != null)
+                {
+                    if ((int)(reg_ThemesPersonalize.GetValue("SystemUsesLightTheme")) == 0) // 0:dark mode, 1:light mode
+                        themeMode = WindowsThemeMode.Dark;
+                    else
+                        themeMode = WindowsThemeMode.Light;
+                }
+                else
+                {
+                    throw new Exception("Reg-Value SystemUsesLightTheme not found.");
+                }
+            }
+            catch
+            {
+                if (isVerbose)
+                {
+                    Logging.Info(
+                            $"Cannot get Windows 10 system theme mode, return default value 0 (dark mode).");
+                }
+            }
+            return themeMode;
         }
 
         // return a full path with filename combined which pointed to the temporary directory
@@ -131,7 +151,7 @@ namespace Shadowsocks.Util
         public static string FormatBandwidth(long n)
         {
             var result = GetBandwidthScale(n);
-            return $"{result.value:0.##}{result.unit_name}";
+            return $"{result.value:0.##}{result.unitName}";
         }
 
         public static string FormatBytes(long bytes)
@@ -211,7 +231,7 @@ namespace Shadowsocks.Util
             return new BandwidthScaleInfo(f, unit, scale);
         }
 
-        public static RegistryKey OpenRegKey( string name, bool writable, RegistryHive hive = RegistryHive.CurrentUser )
+        public static RegistryKey OpenRegKey(string name, bool writable, RegistryHive hive = RegistryHive.CurrentUser)
         {
             // we are building x86 binary for both x86 and x64, which will
             // cause problem when opening registry key
@@ -224,24 +244,20 @@ namespace Shadowsocks.Util
                     .OpenSubKey(name, writable);
                 return userKey;
             }
-            catch (UnauthorizedAccessException uae)
-            {
-                Logging.LogUsefulException(uae);
-                return null;
-            }
-            catch (SecurityException se)
-            {
-                Logging.LogUsefulException(se);
-                return null;
-            }
             catch (ArgumentException ae)
             {
                 MessageBox.Show("OpenRegKey: " + ae.ToString());
                 return null;
             }
+            catch (Exception e)
+            {
+                Logging.LogUsefulException(e);
+                return null;
+            }
         }
 
-        public static bool IsWinVistaOrHigher() {
+        public static bool IsWinVistaOrHigher()
+        {
             return Environment.OSVersion.Version.Major > 5;
         }
 
@@ -249,5 +265,35 @@ namespace Shadowsocks.Util
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool SetProcessWorkingSetSize(IntPtr process,
             UIntPtr minimumWorkingSetSize, UIntPtr maximumWorkingSetSize);
+
+
+        // See: https://msdn.microsoft.com/en-us/library/hh925568(v=vs.110).aspx
+        public static bool IsSupportedRuntimeVersion()
+        {
+            /*
+             * +-----------------------------------------------------------------+----------------------------+
+             * | Version                                                         | Value of the Release DWORD |
+             * +-----------------------------------------------------------------+----------------------------+
+             * | .NET Framework 4.6.2 installed on Windows 10 Anniversary Update | 394802                     |
+             * | .NET Framework 4.6.2 installed on all other Windows OS versions | 394806                     |
+             * +-----------------------------------------------------------------+----------------------------+
+             */
+            const int minSupportedRelease = 394802;
+
+            const string subkey = @"SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full\";
+            using (var ndpKey = OpenRegKey(subkey, false, RegistryHive.LocalMachine))
+            {
+                if (ndpKey?.GetValue("Release") != null)
+                {
+                    var releaseKey = (int)ndpKey.GetValue("Release");
+
+                    if (releaseKey >= minSupportedRelease)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
     }
 }
